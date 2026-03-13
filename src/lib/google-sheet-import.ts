@@ -1,4 +1,4 @@
-﻿import { hasGoogleSheetsImportEnv } from "@/lib/env";
+import { hasGoogleSheetsImportEnv } from "@/lib/env";
 import { readGoogleSheetTabs, type SheetRow } from "@/lib/google-sheets";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
@@ -9,6 +9,13 @@ type SyncIssue = {
   entityKey: string;
   issueMessage: string;
   payload?: Record<string, unknown>;
+};
+
+type ZoneRecord = {
+  id: string;
+  zone_code: string;
+  zone_name: string;
+  current_vendor_id: string | null;
 };
 
 function pickFirst(row: SheetRow, keys: string[]) {
@@ -32,6 +39,23 @@ function parseNumber(value: string, fallback: number | null = null) {
   const normalized = value.replace(/,/g, ".");
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildDerivedZoneCode(zoneName: string) {
+  const normalized = normalizeText(zoneName)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return `AUTO_${normalized || "SIN_ZONA"}`;
 }
 
 export type GoogleSheetImportResult = {
@@ -77,8 +101,8 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
     const zonesRows = tabs.ZONAS ?? [];
     const customersRows = tabs.CLIENTES ?? [];
 
-    if (!vendorsRows.length || !zonesRows.length || !customersRows.length) {
-      throw new Error("El sheet debe tener datos en VENDEDORES, ZONAS y CLIENTES.");
+    if (!vendorsRows.length || !customersRows.length) {
+      throw new Error("El sheet debe tener datos en VENDEDORES y CLIENTES.");
     }
 
     let processedVendors = 0;
@@ -125,13 +149,16 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
     const vendorsRes = await supabase
       .from("vendors")
       .select("id,vendor_code")
-      .in("vendor_code", vendorCodes);
+      .in("vendor_code", vendorCodes)
+      .order("vendor_code", { ascending: true });
 
     if (vendorsRes.error) {
       throw new Error(vendorsRes.error.message);
     }
 
-    const vendorMap = new Map((vendorsRes.data ?? []).map((vendor) => [vendor.vendor_code.toUpperCase(), vendor.id]));
+    const vendorData = vendorsRes.data ?? [];
+    const vendorMap = new Map(vendorData.map((vendor) => [vendor.vendor_code.toUpperCase(), vendor.id]));
+    const vendorIds = vendorData.map((vendor) => vendor.id);
 
     const zonePayload = [] as Array<{
       zone_code: string;
@@ -165,7 +192,37 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
       });
     }
 
-    const zonesUpsertRes = await supabase.from("zones").upsert(zonePayload, {
+    const normalizedZoneNamesFromSheet = new Set(zonePayload.map((zone) => normalizeText(zone.zone_name).toUpperCase()));
+    let nextDerivedVendorIndex = 0;
+
+    for (const row of customersRows) {
+      const zoneNameRaw = pickFirst(row, ["zone_name", "zona"]);
+      if (!zoneNameRaw) continue;
+
+      const normalizedZoneName = normalizeText(zoneNameRaw).toUpperCase();
+      if (!normalizedZoneName || normalizedZoneNamesFromSheet.has(normalizedZoneName)) {
+        continue;
+      }
+
+      const vendorId = vendorIds.length > 0 ? vendorIds[nextDerivedVendorIndex % vendorIds.length] : null;
+      nextDerivedVendorIndex += 1;
+
+      zonePayload.push({
+        zone_code: buildDerivedZoneCode(zoneNameRaw),
+        zone_name: zoneNameRaw,
+        current_vendor_id: vendorId,
+        weekly_target: 225,
+        active: true,
+      });
+
+      normalizedZoneNamesFromSheet.add(normalizedZoneName);
+    }
+
+    const uniqueZonePayload = Array.from(
+      new Map(zonePayload.map((zone) => [zone.zone_code, zone])).values(),
+    );
+
+    const zonesUpsertRes = await supabase.from("zones").upsert(uniqueZonePayload, {
       onConflict: "zone_code",
       ignoreDuplicates: false,
     });
@@ -174,7 +231,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
       throw new Error(zonesUpsertRes.error.message);
     }
 
-    const zoneCodes = zonePayload.map((zone) => zone.zone_code);
+    const zoneCodes = uniqueZonePayload.map((zone) => zone.zone_code);
     const zonesRes = await supabase
       .from("zones")
       .select("id,zone_code,zone_name,current_vendor_id")
@@ -184,8 +241,9 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
       throw new Error(zonesRes.error.message);
     }
 
-    const zonesByCode = new Map((zonesRes.data ?? []).map((zone) => [zone.zone_code.toUpperCase(), zone]));
-    const zonesByName = new Map((zonesRes.data ?? []).map((zone) => [zone.zone_name.toUpperCase(), zone]));
+    const zoneRows = zonesRes.data ?? [];
+    const zonesByCode = new Map(zoneRows.map((zone) => [zone.zone_code.toUpperCase(), zone as ZoneRecord]));
+    const zonesByName = new Map(zoneRows.map((zone) => [normalizeText(zone.zone_name).toUpperCase(), zone as ZoneRecord]));
 
     const customerPayload = [] as Array<Record<string, unknown>>;
 
@@ -200,7 +258,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
       const zone = zoneCodeRaw
         ? zonesByCode.get(zoneCodeRaw.toUpperCase())
         : zoneNameRaw
-          ? zonesByName.get(zoneNameRaw.toUpperCase())
+          ? zonesByName.get(normalizeText(zoneNameRaw).toUpperCase())
           : undefined;
 
       if (!externalCustomerId || !fullName || !addressLine || !zone) {
@@ -271,13 +329,13 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
       .update({
         status: syncIssues.length > 0 ? "warning" : "success",
         finished_at: new Date().toISOString(),
-        inserted_count: processedVendors + zonePayload.length + customerPayload.length,
+        inserted_count: processedVendors + uniqueZonePayload.length + customerPayload.length,
         updated_count: 0,
         skipped_count: syncIssues.length,
         error_count: syncIssues.length,
         summary: {
           vendors_processed: processedVendors,
-          zones_processed: zonePayload.length,
+          zones_processed: uniqueZonePayload.length,
           customers_processed: customerPayload.length,
           issues: syncIssues.length,
         },
@@ -286,7 +344,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
 
     return {
       ok: true,
-      message: `Importacion completa. Vendors: ${processedVendors}, zonas: ${zonePayload.length}, clientes: ${customerPayload.length}.`,
+      message: `Importacion completa. Vendors: ${processedVendors}, zonas: ${uniqueZonePayload.length}, clientes: ${customerPayload.length}.`,
     };
   } catch (error) {
     await supabase
