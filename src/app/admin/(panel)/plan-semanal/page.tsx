@@ -1,7 +1,7 @@
 import { GenerateWeeklyPlanForm } from "@/components/admin/generate-weekly-plan-form";
 import { SectionCard } from "@/components/shared/section-card";
 import { getAdminWeeklyPlanData } from "@/lib/admin-live-data";
-import { normalizeWeekStartDate } from "@/lib/weekly-planner";
+import { formatIsoDateForAr, normalizeWeekStartDate } from "@/lib/weekly-planner";
 
 const dayLabels = ["Lun", "Mar", "Mie", "Jue", "Vie"];
 
@@ -36,8 +36,10 @@ export default async function AdminWeeklyPlanPage({
               <input
                 id="week"
                 name="week"
-                type="date"
-                defaultValue={data.weekStartDate}
+                type="text"
+                inputMode="numeric"
+                placeholder="dd/mm/aaaa"
+                defaultValue={formatIsoDateForAr(data.weekStartDate)}
                 className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface-alt)] px-4 py-3 outline-none"
               />
               <button
@@ -47,6 +49,7 @@ export default async function AdminWeeklyPlanPage({
                 Ver
               </button>
             </div>
+            <p className="text-xs text-[var(--muted-foreground)]">Formato: dd/mm/aaaa</p>
           </form>
 
           <div className="w-full max-w-sm xl:justify-self-end">

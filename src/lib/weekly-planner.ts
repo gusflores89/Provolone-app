@@ -10,6 +10,36 @@ function toIsoDate(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function parseSupportedDate(rawValue: string) {
+  const trimmed = rawValue.trim();
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const parsed = new Date(`${trimmed}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const match = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (match) {
+    const [, day, month, year] = match;
+    const parsed = new Date(`${year}-${month}-${day}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
+}
+
+export function formatIsoDateForAr(isoDate: string) {
+  const parsed = parseSupportedDate(isoDate);
+  if (!parsed) {
+    return isoDate;
+  }
+
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const year = parsed.getFullYear();
+  return `${day}/${month}/${year}`;
+}
+
 export function getWeekStartDate(date = new Date()) {
   const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const day = copy.getDay();
@@ -29,8 +59,8 @@ export function normalizeWeekStartDate(rawWeekStartDate?: string) {
     return toIsoDate(getWeekStartDate());
   }
 
-  const parsed = new Date(`${rawWeekStartDate}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseSupportedDate(rawWeekStartDate);
+  if (!parsed) {
     return toIsoDate(getWeekStartDate());
   }
 
@@ -176,7 +206,7 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
   if (visitPayload.length === 0) {
     return {
       ok: true,
-      message: `La semana ${weekStartDate} ya tenia visitas generadas para todos los clientes activos. No hubo cambios.`,
+      message: `La semana ${formatIsoDateForAr(weekStartDate)} ya tenia visitas generadas para todos los clientes activos. No hubo cambios.`,
     };
   }
 
@@ -189,7 +219,7 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
     .from("weekly_plans")
     .update({
       status: "draft",
-      notes: `Plan actualizado para ${weekStartDate} a ${weekEndDate}.`,
+      notes: `Plan actualizado para ${formatIsoDateForAr(weekStartDate)} a ${formatIsoDateForAr(weekEndDate)}.`,
     })
     .eq("id", weeklyPlanId);
 
@@ -199,6 +229,6 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
 
   return {
     ok: true,
-    message: `Plan semanal actualizado. Se agregaron ${visitPayload.length} visitas entre ${weekStartDate} y ${weekEndDate}.`,
+    message: `Plan semanal actualizado. Se agregaron ${visitPayload.length} visitas entre ${formatIsoDateForAr(weekStartDate)} y ${formatIsoDateForAr(weekEndDate)}.`,
   };
 }
