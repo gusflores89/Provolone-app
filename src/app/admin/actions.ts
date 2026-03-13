@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { runGoogleSheetImport, type GoogleSheetImportResult } from "@/lib/google-sheet-import";
 import { createSupabaseAdminClient } from "@/lib/supabase";
+import { assignZoneToVendor, rebalanceZonesAcrossVendors, type ZoneRebalanceResult } from "@/lib/zone-assignment";
 import { generateWeeklyPlanForWeek, normalizeWeekStartDate, type WeeklyPlanGenerationResult } from "@/lib/weekly-planner";
 
 type ImportActionState = GoogleSheetImportResult;
@@ -39,6 +40,44 @@ export async function generateWeeklyPlanAction(
   revalidatePath("/admin/visitas");
   revalidatePath("/vendedor/hoy");
   return result;
+}
+
+export async function rebalanceZonesAction(
+  previousState: ZoneRebalanceResult,
+  formData: FormData,
+): Promise<ZoneRebalanceResult> {
+  void previousState;
+  void formData;
+
+  const result = await rebalanceZonesAcrossVendors();
+
+  revalidatePath("/admin");
+  revalidatePath("/admin/zonas");
+  revalidatePath("/admin/vendedores");
+  revalidatePath("/admin/clientes");
+  revalidatePath("/admin/visitas");
+  revalidatePath("/admin/plan-semanal");
+  revalidatePath("/vendedor/hoy");
+  return result;
+}
+
+export async function updateZoneVendorAssignmentSubmitAction(formData: FormData): Promise<void> {
+  const zoneId = formData.get("zoneId")?.toString();
+  const newVendorId = formData.get("vendorId")?.toString();
+
+  if (!zoneId || !newVendorId) {
+    return;
+  }
+
+  await assignZoneToVendor(zoneId, newVendorId);
+
+  revalidatePath("/admin");
+  revalidatePath("/admin/zonas");
+  revalidatePath("/admin/vendedores");
+  revalidatePath("/admin/clientes");
+  revalidatePath("/admin/visitas");
+  revalidatePath("/admin/plan-semanal");
+  revalidatePath("/vendedor/hoy");
 }
 
 export async function updateCustomerVendorAssignmentSubmitAction(formData: FormData): Promise<void> {

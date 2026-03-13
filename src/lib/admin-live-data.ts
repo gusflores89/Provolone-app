@@ -44,7 +44,9 @@ export type AdminZoneRow = {
   zoneCode: string;
   zoneName: string;
   vendorCode: string;
+  vendorId: string;
   customerCount: number;
+  weeklyTarget: number;
   status: string;
 };
 
@@ -284,6 +286,7 @@ export async function getAdminZones() {
           zone_code,
           zone_name,
           weekly_target,
+          current_vendor_id,
           vendors!zones_current_vendor_id_fkey(vendor_code)
         `,
       )
@@ -311,13 +314,24 @@ export async function getAdminZones() {
     const customerCount = customerCountByZone.get(row.id) ?? 0;
     const weeklyTarget = row.weekly_target ?? 225;
 
+    let status = "OK";
+    if (customerCount === 0) {
+      status = "Sin clientes";
+    } else if (customerCount > weeklyTarget) {
+      status = "Sobrecarga";
+    } else if (customerCount < Math.round(weeklyTarget * 0.6)) {
+      status = "Liviana";
+    }
+
     return {
       id: row.id,
       zoneCode: row.zone_code,
       zoneName: row.zone_name,
       vendorCode: vendor?.vendor_code ?? "Sin vendedor",
+      vendorId: row.current_vendor_id ?? "",
       customerCount,
-      status: customerCount > weeklyTarget ? "Sobrecarga" : "OK",
+      weeklyTarget,
+      status,
     };
   });
 
