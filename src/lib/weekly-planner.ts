@@ -133,7 +133,8 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
     supabase
       .from("daily_visits")
       .select("customer_id,vendor_id,visit_date,planned_order")
-      .eq("weekly_plan_id", weeklyPlanId),
+      .gte("visit_date", weekStartDate)
+      .lte("visit_date", weekEndDate),
     supabase
       .from("customers")
       .select("id,full_name,zone_id,assigned_vendor_id,active")
