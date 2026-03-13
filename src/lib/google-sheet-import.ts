@@ -3,6 +3,9 @@ import { readGoogleSheetTabs, type SheetRow } from "@/lib/google-sheets";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 const REQUIRED_TABS = ["VENDEDORES", "ZONAS", "CLIENTES"] as const;
+const FALLBACK_ZONE_CODE = "AUTO_PENDIENTE_ZONIFICACION";
+const FALLBACK_ZONE_NAME = "Pendiente de zonificacion";
+const FALLBACK_VENDOR_CODE = "V020";
 
 type SyncIssue = {
   entityType: string;
@@ -159,6 +162,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
     const vendorData = vendorsRes.data ?? [];
     const vendorMap = new Map(vendorData.map((vendor) => [vendor.vendor_code.toUpperCase(), vendor.id]));
     const vendorIds = vendorData.map((vendor) => vendor.id);
+    const fallbackVendorId = vendorMap.get(FALLBACK_VENDOR_CODE) ?? vendorIds[0] ?? null;
 
     const zonePayload = [] as Array<{
       zone_code: string;
@@ -204,7 +208,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
         continue;
       }
 
-      const vendorId = vendorIds.length > 0 ? vendorIds[nextDerivedVendorIndex % vendorIds.length] : null;
+      const vendorId = vendorIds.length > 0 ? vendorIds[nextDerivedVendorIndex % vendorIds.length] : fallbackVendorId;
       nextDerivedVendorIndex += 1;
 
       zonePayload.push({
@@ -216,6 +220,16 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
       });
 
       normalizedZoneNamesFromSheet.add(normalizedZoneName);
+    }
+
+    if (!normalizedZoneNamesFromSheet.has(normalizeText(FALLBACK_ZONE_NAME).toUpperCase())) {
+      zonePayload.push({
+        zone_code: FALLBACK_ZONE_CODE,
+        zone_name: FALLBACK_ZONE_NAME,
+        current_vendor_id: fallbackVendorId,
+        weekly_target: 225,
+        active: true,
+      });
     }
 
     const uniqueZonePayload = Array.from(
@@ -244,6 +258,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
     const zoneRows = zonesRes.data ?? [];
     const zonesByCode = new Map(zoneRows.map((zone) => [zone.zone_code.toUpperCase(), zone as ZoneRecord]));
     const zonesByName = new Map(zoneRows.map((zone) => [normalizeText(zone.zone_name).toUpperCase(), zone as ZoneRecord]));
+    const fallbackZone = zonesByCode.get(FALLBACK_ZONE_CODE) ?? zonesByName.get(normalizeText(FALLBACK_ZONE_NAME).toUpperCase());
 
     const customerPayload = [] as Array<Record<string, unknown>>;
 
@@ -259,7 +274,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
         ? zonesByCode.get(zoneCodeRaw.toUpperCase())
         : zoneNameRaw
           ? zonesByName.get(normalizeText(zoneNameRaw).toUpperCase())
-          : undefined;
+          : fallbackZone;
 
       if (!externalCustomerId || !fullName || !addressLine || !zone) {
         syncIssues.push({
@@ -272,9 +287,10 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
       }
 
       const overrideVendorId = overrideVendorCode ? vendorMap.get(overrideVendorCode) ?? null : null;
-      const assignedVendorId = overrideVendorId ?? zone.current_vendor_id;
+      const assignedVendorId = overrideVendorId ?? zone.current_vendor_id ?? fallbackVendorId;
+      const defaultVendorId = zone.current_vendor_id ?? fallbackVendorId;
 
-      if (!assignedVendorId) {
+      if (!assignedVendorId || !defaultVendorId) {
         syncIssues.push({
           entityType: "customer",
           entityKey: externalCustomerId,
@@ -290,7 +306,7 @@ export async function runGoogleSheetImport(): Promise<GoogleSheetImportResult> {
         address_line: addressLine,
         city: pickFirst(row, ["city", "ciudad"]) || "Cordoba",
         zone_id: zone.id,
-        default_vendor_id: zone.current_vendor_id,
+        default_vendor_id: defaultVendorId,
         assigned_vendor_id: assignedVendorId,
         assignment_mode: overrideVendorId ? "manual_override" : "zone_default",
         lat: parseNumber(pickFirst(row, ["lat"])),
