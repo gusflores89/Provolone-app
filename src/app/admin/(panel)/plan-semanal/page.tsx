@@ -27,34 +27,11 @@ export default async function AdminWeeklyPlanPage({
           </p>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-[minmax(240px,1fr)_minmax(240px,1fr)] md:items-end">
-          <form method="get" className="space-y-2">
-            <label htmlFor="week" className="block text-sm font-semibold text-[var(--foreground)]">
-              Semana a revisar
-            </label>
-            <div className="flex gap-3">
-              <input
-                id="week"
-                name="week"
-                type="text"
-                inputMode="numeric"
-                placeholder="dd/mm/aaaa"
-                defaultValue={formatIsoDateForAr(data.weekStartDate)}
-                className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface-alt)] px-4 py-3 outline-none"
-              />
-              <button
-                type="submit"
-                className="rounded-full border border-[var(--border)] bg-white px-4 py-3 text-sm font-semibold"
-              >
-                Ver
-              </button>
-            </div>
-            <p className="text-xs text-[var(--muted-foreground)]">Formato: dd/mm/aaaa</p>
-          </form>
-
-          <div className="w-full max-w-sm xl:justify-self-end">
-            <GenerateWeeklyPlanForm disabled={!data.connected} weekStartDate={data.weekStartDate} />
-          </div>
+        <div className="w-full max-w-2xl xl:justify-self-end">
+          <GenerateWeeklyPlanForm
+            disabled={!data.connected}
+            initialWeekStartDate={formatIsoDateForAr(data.weekStartDate)}
+          />
         </div>
       </header>
 

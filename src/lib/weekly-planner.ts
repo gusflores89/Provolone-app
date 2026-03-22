@@ -2,6 +2,26 @@ import { hasSupabaseEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 const WORKING_DAY_COUNT = 5;
+const PAGE_SIZE = 1000;
+const ROUTE_START_LAT = -31.4172;
+const ROUTE_START_LNG = -64.1865;
+
+type WeeklyVisitSeedRow = {
+  customer_id: string;
+  vendor_id: string;
+  visit_date: string;
+  planned_order: number | null;
+};
+
+type WeeklyCustomerRow = {
+  id: string;
+  full_name: string;
+  zone_id: string | null;
+  assigned_vendor_id: string | null;
+  active: boolean;
+  lat: number | string | null;
+  lng: number | string | null;
+};
 
 function toIsoDate(date: Date) {
   const year = date.getFullYear();
@@ -28,6 +48,32 @@ function parseSupportedDate(rawValue: string) {
   return null;
 }
 
+async function fetchAllRows<T>(
+  fetchPage: (from: number, to: number) => Promise<{ data: T[] | null; error: { message: string } | null }>,
+) {
+  const rows: T[] = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + PAGE_SIZE - 1;
+    const result = await fetchPage(from, to);
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+
+    const page = result.data ?? [];
+    rows.push(...page);
+
+    if (page.length < PAGE_SIZE) {
+      break;
+    }
+
+    from += PAGE_SIZE;
+  }
+
+  return rows;
+}
+
 export function formatIsoDateForAr(isoDate: string) {
   const parsed = parseSupportedDate(isoDate);
   if (!parsed) {
@@ -52,6 +98,90 @@ function addDays(date: Date, days: number) {
   const copy = new Date(date.getTime());
   copy.setDate(copy.getDate() + days);
   return copy;
+}
+
+function toRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function haversineDistanceKm(
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+) {
+  const earthRadiusKm = 6371;
+  const dLat = toRadians(toLat - fromLat);
+  const dLng = toRadians(toLng - fromLng);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(fromLat)) * Math.cos(toRadians(toLat)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusKm * c;
+}
+
+function toNumericCoordinate(value: number | string | null | undefined) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const parsed = Number(trimmed.replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function orderCustomersByNearestNeighbor(customers: WeeklyCustomerRow[]) {
+  const normalizedCustomers = customers.map((customer) => ({
+    ...customer,
+    lat: toNumericCoordinate(customer.lat),
+    lng: toNumericCoordinate(customer.lng),
+  }));
+
+  const customersWithCoords = normalizedCustomers.filter(
+    (customer) => typeof customer.lat === "number" && typeof customer.lng === "number",
+  );
+  const customersWithoutCoords = normalizedCustomers.filter(
+    (customer) => typeof customer.lat !== "number" || typeof customer.lng !== "number",
+  );
+
+  if (customersWithCoords.length <= 1) {
+    return [...customersWithCoords, ...customersWithoutCoords];
+  }
+
+  const pending = [...customersWithCoords];
+  const ordered: WeeklyCustomerRow[] = [];
+  let currentLat = ROUTE_START_LAT;
+  let currentLng = ROUTE_START_LNG;
+
+  while (pending.length > 0) {
+    let selectedIndex = 0;
+    let selectedDistance = Number.POSITIVE_INFINITY;
+
+    for (let index = 0; index < pending.length; index += 1) {
+      const candidate = pending[index];
+      const distance = haversineDistanceKm(currentLat, currentLng, candidate.lat!, candidate.lng!);
+
+      if (distance < selectedDistance) {
+        selectedDistance = distance;
+        selectedIndex = index;
+      }
+    }
+
+    const [selectedCustomer] = pending.splice(selectedIndex, 1);
+    ordered.push(selectedCustomer);
+    currentLat = selectedCustomer.lat!;
+    currentLng = selectedCustomer.lng!;
+  }
+
+  return [...ordered, ...customersWithoutCoords];
 }
 
 export function normalizeWeekStartDate(rawWeekStartDate?: string) {
@@ -129,91 +259,108 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
     weeklyPlanId = createPlanRes.data.id;
   }
 
-  const [existingVisitsRes, customersRes] = await Promise.all([
-    supabase
-      .from("daily_visits")
-      .select("customer_id,vendor_id,visit_date,planned_order")
-      .gte("visit_date", weekStartDate)
-      .lte("visit_date", weekEndDate),
-    supabase
-      .from("customers")
-      .select("id,full_name,zone_id,assigned_vendor_id,active")
-      .eq("active", true)
-      .order("assigned_vendor_id", { ascending: true })
-      .order("zone_id", { ascending: true })
-      .order("full_name", { ascending: true }),
-  ]);
+  try {
+    const [existingVisits, customers] = await Promise.all([
+      fetchAllRows<WeeklyVisitSeedRow>(async (from, to) =>
+        await supabase
+          .from("daily_visits")
+          .select("customer_id,vendor_id,visit_date,planned_order")
+          .gte("visit_date", weekStartDate)
+          .lte("visit_date", weekEndDate)
+          .range(from, to),
+      ),
+      fetchAllRows<WeeklyCustomerRow>(async (from, to) =>
+        await supabase
+          .from("customers")
+          .select("id,full_name,zone_id,assigned_vendor_id,active,lat,lng")
+          .eq("active", true)
+          .order("assigned_vendor_id", { ascending: true })
+          .order("zone_id", { ascending: true })
+          .order("full_name", { ascending: true })
+          .range(from, to),
+      ),
+    ]);
 
-  if (existingVisitsRes.error) {
-    return { ok: false, message: existingVisitsRes.error.message };
-  }
-
-  if (customersRes.error) {
-    return { ok: false, message: customersRes.error.message };
-  }
-
-  const customers = customersRes.data ?? [];
-  if (customers.length === 0) {
-    return { ok: false, message: "No hay clientes activos para generar visitas." };
-  }
-
-  const existingCustomerIds = new Set((existingVisitsRes.data ?? []).map((visit) => visit.customer_id));
-  const orderCounterByVendorDay = new Map<string, number>();
-
-  for (const visit of existingVisitsRes.data ?? []) {
-    const key = `${visit.vendor_id}-${visit.visit_date}`;
-    const currentOrder = visit.planned_order ?? 0;
-    orderCounterByVendorDay.set(key, Math.max(orderCounterByVendorDay.get(key) ?? 0, currentOrder));
-  }
-
-  const groupedCustomers = new Map<string, typeof customers>();
-  for (const customer of customers) {
-    if (!customer.assigned_vendor_id || !customer.zone_id || existingCustomerIds.has(customer.id)) {
-      continue;
+    if (customers.length === 0) {
+      return { ok: false, message: "No hay clientes activos para generar visitas." };
     }
 
-    const list = groupedCustomers.get(customer.assigned_vendor_id) ?? [];
-    list.push(customer);
-    groupedCustomers.set(customer.assigned_vendor_id, list);
-  }
+    const existingCustomerIds = new Set(existingVisits.map((visit) => visit.customer_id));
+    const orderCounterByVendorDay = new Map<string, number>();
 
-  const { dayDates } = getWorkingWeekDateRange(weekStartDate);
-  const visitPayload: Array<Record<string, unknown>> = [];
+    for (const visit of existingVisits) {
+      const key = `${visit.vendor_id}-${visit.visit_date}`;
+      const currentOrder = visit.planned_order ?? 0;
+      orderCounterByVendorDay.set(key, Math.max(orderCounterByVendorDay.get(key) ?? 0, currentOrder));
+    }
 
-  for (const [vendorId, vendorCustomers] of groupedCustomers.entries()) {
-    vendorCustomers.forEach((customer, index) => {
-      const visitDate = dayDates[index % WORKING_DAY_COUNT];
-      const orderKey = `${vendorId}-${visitDate}`;
-      const plannedOrder = (orderCounterByVendorDay.get(orderKey) ?? 0) + 1;
-      orderCounterByVendorDay.set(orderKey, plannedOrder);
+    const groupedCustomers = new Map<string, WeeklyCustomerRow[]>();
+    for (const customer of customers) {
+      if (!customer.assigned_vendor_id || !customer.zone_id || existingCustomerIds.has(customer.id)) {
+        continue;
+      }
 
-      visitPayload.push({
-        weekly_plan_id: weeklyPlanId,
-        visit_date: visitDate,
-        customer_id: customer.id,
-        vendor_id: vendorId,
-        zone_id: customer.zone_id,
-        planned_order: plannedOrder,
-        status: "pending",
-        original_visit_date: visitDate,
-        has_order: null,
-        comment: null,
-        rescheduled_to: null,
-        visited_at: null,
+      const list = groupedCustomers.get(customer.assigned_vendor_id) ?? [];
+      list.push(customer);
+      groupedCustomers.set(customer.assigned_vendor_id, list);
+    }
+
+    const { dayDates } = getWorkingWeekDateRange(weekStartDate);
+    const visitPayload: Array<Record<string, unknown>> = [];
+
+    for (const [vendorId, vendorCustomers] of groupedCustomers.entries()) {
+      const customersByDay = new Map<string, WeeklyCustomerRow[]>();
+
+      vendorCustomers.forEach((customer, index) => {
+        const visitDate = dayDates[index % WORKING_DAY_COUNT];
+        const list = customersByDay.get(visitDate) ?? [];
+        list.push(customer);
+        customersByDay.set(visitDate, list);
       });
-    });
-  }
 
-  if (visitPayload.length === 0) {
+      for (const visitDate of dayDates) {
+        const dayCustomers = customersByDay.get(visitDate) ?? [];
+        const orderedDayCustomers = orderCustomersByNearestNeighbor(dayCustomers);
+
+        orderedDayCustomers.forEach((customer) => {
+          const orderKey = `${vendorId}-${visitDate}`;
+          const plannedOrder = (orderCounterByVendorDay.get(orderKey) ?? 0) + 1;
+          orderCounterByVendorDay.set(orderKey, plannedOrder);
+
+          visitPayload.push({
+            weekly_plan_id: weeklyPlanId,
+            visit_date: visitDate,
+            customer_id: customer.id,
+            vendor_id: vendorId,
+            zone_id: customer.zone_id,
+            planned_order: plannedOrder,
+            status: "pending",
+            original_visit_date: visitDate,
+            has_order: null,
+            comment: null,
+            rescheduled_to: null,
+            visited_at: null,
+          });
+        });
+      }
+    }
+
+    if (visitPayload.length === 0) {
+      return {
+        ok: true,
+        message: `La semana ${formatIsoDateForAr(weekStartDate)} ya tenia visitas generadas para todos los clientes activos. No hubo cambios.`,
+      };
+    }
+
+    const insertVisitsRes = await supabase.from("daily_visits").insert(visitPayload);
+    if (insertVisitsRes.error) {
+      return { ok: false, message: insertVisitsRes.error.message };
+    }
+  } catch (error) {
     return {
-      ok: true,
-      message: `La semana ${formatIsoDateForAr(weekStartDate)} ya tenia visitas generadas para todos los clientes activos. No hubo cambios.`,
+      ok: false,
+      message: error instanceof Error ? error.message : "No se pudo generar el plan semanal.",
     };
-  }
-
-  const insertVisitsRes = await supabase.from("daily_visits").insert(visitPayload);
-  if (insertVisitsRes.error) {
-    return { ok: false, message: insertVisitsRes.error.message };
   }
 
   const touchPlanRes = await supabase
@@ -230,6 +377,6 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
 
   return {
     ok: true,
-    message: `Plan semanal actualizado. Se agregaron ${visitPayload.length} visitas entre ${formatIsoDateForAr(weekStartDate)} y ${formatIsoDateForAr(weekEndDate)}.`,
+    message: `Plan semanal actualizado. Se agregaron visitas nuevas entre ${formatIsoDateForAr(weekStartDate)} y ${formatIsoDateForAr(weekEndDate)}.`,
   };
 }
