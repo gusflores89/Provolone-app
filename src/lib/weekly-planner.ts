@@ -138,6 +138,205 @@ function toNumericCoordinate(value: number | string | null | undefined) {
   return null;
 }
 
+function squaredDistance(
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+) {
+  const dLat = fromLat - toLat;
+  const dLng = fromLng - toLng;
+  return dLat * dLat + dLng * dLng;
+}
+
+function selectGeoSeeds(customers: Array<WeeklyCustomerRow & { lat: number; lng: number }>, clusterCount: number) {
+  if (customers.length === 0 || clusterCount <= 0) {
+    return [] as Array<{ lat: number; lng: number }>;
+  }
+
+  const sorted = [...customers].sort((left, right) => left.lat - right.lat || left.lng - right.lng);
+  const seeds = [sorted[0]];
+
+  while (seeds.length < clusterCount && seeds.length < sorted.length) {
+    let bestCustomer = sorted[0];
+    let bestDistance = Number.NEGATIVE_INFINITY;
+
+    for (const customer of sorted) {
+      const minDistance = Math.min(
+        ...seeds.map((seed) => squaredDistance(customer.lat, customer.lng, seed.lat, seed.lng)),
+      );
+
+      if (minDistance > bestDistance) {
+        bestDistance = minDistance;
+        bestCustomer = customer;
+      }
+    }
+
+    seeds.push(bestCustomer);
+  }
+
+  return seeds.slice(0, clusterCount).map((seed) => ({ lat: seed.lat, lng: seed.lng }));
+}
+
+function buildBalancedGeoClusters(customers: WeeklyCustomerRow[], clusterCount: number) {
+  const normalizedCustomers = customers
+    .map((customer) => ({
+      ...customer,
+      lat: toNumericCoordinate(customer.lat),
+      lng: toNumericCoordinate(customer.lng),
+    }))
+    .filter((customer): customer is WeeklyCustomerRow & { lat: number; lng: number } =>
+      typeof customer.lat === "number" && typeof customer.lng === "number",
+    );
+
+  if (normalizedCustomers.length === 0 || clusterCount <= 0) {
+    return [] as Array<Array<WeeklyCustomerRow & { lat: number; lng: number }>>;
+  }
+
+  const effectiveClusterCount = Math.min(clusterCount, normalizedCustomers.length);
+  const capacities = Array.from({ length: effectiveClusterCount }, (_, index) => {
+    const base = Math.floor(normalizedCustomers.length / effectiveClusterCount);
+    const extra = index < normalizedCustomers.length % effectiveClusterCount ? 1 : 0;
+    return base + extra;
+  });
+
+  let centers = selectGeoSeeds(normalizedCustomers, effectiveClusterCount);
+
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const rankedCustomers = normalizedCustomers
+      .map((customer) => {
+        const orderedChoices = centers
+          .map((center, index) => ({
+            index,
+            distance: squaredDistance(customer.lat, customer.lng, center.lat, center.lng),
+          }))
+          .sort((left, right) => left.distance - right.distance);
+
+        return {
+          customer,
+          orderedChoices,
+          margin:
+            (orderedChoices[1]?.distance ?? orderedChoices[0]?.distance ?? 0) -
+            (orderedChoices[0]?.distance ?? 0),
+        };
+      })
+      .sort((left, right) => right.margin - left.margin);
+
+    const clusters = Array.from({ length: effectiveClusterCount }, () => [] as Array<WeeklyCustomerRow & { lat: number; lng: number }>);
+
+    for (const ranked of rankedCustomers) {
+      const choice = ranked.orderedChoices.find((option) => clusters[option.index].length < capacities[option.index]);
+      const fallbackChoice = choice ?? ranked.orderedChoices[0];
+      clusters[fallbackChoice.index].push(ranked.customer);
+    }
+
+    centers = clusters.map((cluster, index) => {
+      if (cluster.length === 0) {
+        return centers[index];
+      }
+
+      return {
+        lat: cluster.reduce((sum, customer) => sum + customer.lat, 0) / cluster.length,
+        lng: cluster.reduce((sum, customer) => sum + customer.lng, 0) / cluster.length,
+      };
+    });
+  }
+
+  const finalRankedCustomers = normalizedCustomers
+    .map((customer) => {
+      const orderedChoices = centers
+        .map((center, index) => ({
+          index,
+          distance: squaredDistance(customer.lat, customer.lng, center.lat, center.lng),
+        }))
+        .sort((left, right) => left.distance - right.distance);
+
+      return {
+        customer,
+        orderedChoices,
+        margin:
+          (orderedChoices[1]?.distance ?? orderedChoices[0]?.distance ?? 0) -
+          (orderedChoices[0]?.distance ?? 0),
+      };
+    })
+    .sort((left, right) => right.margin - left.margin);
+
+  const clusters = Array.from({ length: effectiveClusterCount }, () => [] as Array<WeeklyCustomerRow & { lat: number; lng: number }>);
+
+  for (const ranked of finalRankedCustomers) {
+    const choice = ranked.orderedChoices.find((option) => clusters[option.index].length < capacities[option.index]);
+    const fallbackChoice = choice ?? ranked.orderedChoices[0];
+    clusters[fallbackChoice.index].push(ranked.customer);
+  }
+
+  return clusters;
+}
+
+function assignCustomersToDays(
+  customers: WeeklyCustomerRow[],
+  dayDates: string[],
+  existingDayLoads: number[],
+) {
+  const customersWithCoords = customers.filter((customer) => {
+    const lat = toNumericCoordinate(customer.lat);
+    const lng = toNumericCoordinate(customer.lng);
+    return lat !== null && lng !== null;
+  });
+  const customersWithoutCoords = customers.filter((customer) => {
+    const lat = toNumericCoordinate(customer.lat);
+    const lng = toNumericCoordinate(customer.lng);
+    return lat === null || lng === null;
+  });
+
+  const clusters = buildBalancedGeoClusters(customersWithCoords, dayDates.length);
+  const assignments = new Map<string, WeeklyCustomerRow[]>();
+  const currentLoads = [...existingDayLoads];
+
+  for (const date of dayDates) {
+    assignments.set(date, []);
+  }
+
+  const sortedClusters = [...clusters].sort((left, right) => right.length - left.length);
+
+  for (const cluster of sortedClusters) {
+    let targetDayIndex = 0;
+    let targetDayLoad = Number.POSITIVE_INFINITY;
+
+    for (let index = 0; index < dayDates.length; index += 1) {
+      if (currentLoads[index] < targetDayLoad) {
+        targetDayLoad = currentLoads[index];
+        targetDayIndex = index;
+      }
+    }
+
+    const visitDate = dayDates[targetDayIndex];
+    const list = assignments.get(visitDate) ?? [];
+    list.push(...cluster);
+    assignments.set(visitDate, list);
+    currentLoads[targetDayIndex] += cluster.length;
+  }
+
+  for (const customer of customersWithoutCoords) {
+    let targetDayIndex = 0;
+    let targetDayLoad = Number.POSITIVE_INFINITY;
+
+    for (let index = 0; index < dayDates.length; index += 1) {
+      if (currentLoads[index] < targetDayLoad) {
+        targetDayLoad = currentLoads[index];
+        targetDayIndex = index;
+      }
+    }
+
+    const visitDate = dayDates[targetDayIndex];
+    const list = assignments.get(visitDate) ?? [];
+    list.push(customer);
+    assignments.set(visitDate, list);
+    currentLoads[targetDayIndex] += 1;
+  }
+
+  return assignments;
+}
+
 function orderCustomersByNearestNeighbor(customers: WeeklyCustomerRow[]) {
   const normalizedCustomers = customers.map((customer) => ({
     ...customer,
@@ -287,11 +486,13 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
 
     const existingCustomerIds = new Set(existingVisits.map((visit) => visit.customer_id));
     const orderCounterByVendorDay = new Map<string, number>();
+    const existingVisitCountByVendorDay = new Map<string, number>();
 
     for (const visit of existingVisits) {
       const key = `${visit.vendor_id}-${visit.visit_date}`;
       const currentOrder = visit.planned_order ?? 0;
       orderCounterByVendorDay.set(key, Math.max(orderCounterByVendorDay.get(key) ?? 0, currentOrder));
+      existingVisitCountByVendorDay.set(key, (existingVisitCountByVendorDay.get(key) ?? 0) + 1);
     }
 
     const groupedCustomers = new Map<string, WeeklyCustomerRow[]>();
@@ -309,14 +510,10 @@ export async function generateWeeklyPlanForWeek(rawWeekStartDate?: string): Prom
     const visitPayload: Array<Record<string, unknown>> = [];
 
     for (const [vendorId, vendorCustomers] of groupedCustomers.entries()) {
-      const customersByDay = new Map<string, WeeklyCustomerRow[]>();
-
-      vendorCustomers.forEach((customer, index) => {
-        const visitDate = dayDates[index % WORKING_DAY_COUNT];
-        const list = customersByDay.get(visitDate) ?? [];
-        list.push(customer);
-        customersByDay.set(visitDate, list);
-      });
+      const existingDayLoads = dayDates.map(
+        (visitDate) => existingVisitCountByVendorDay.get(`${vendorId}-${visitDate}`) ?? 0,
+      );
+      const customersByDay = assignCustomersToDays(vendorCustomers, dayDates, existingDayLoads);
 
       for (const visitDate of dayDates) {
         const dayCustomers = customersByDay.get(visitDate) ?? [];
