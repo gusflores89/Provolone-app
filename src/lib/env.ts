@@ -39,6 +39,21 @@ export function getAppSessionSecret() {
   throw new Error("Missing APP_SESSION_SECRET environment variable.");
 }
 
+export function hasAdminAuthEnv() {
+  return Boolean(process.env.ADMIN_LOGIN_EMAIL && process.env.ADMIN_LOGIN_PASSWORD);
+}
+
+export function getAdminAuthEnv() {
+  const email = process.env.ADMIN_LOGIN_EMAIL?.trim().toLowerCase();
+  const password = process.env.ADMIN_LOGIN_PASSWORD;
+
+  if (!email || !password) {
+    throw new Error("Missing ADMIN_LOGIN_EMAIL or ADMIN_LOGIN_PASSWORD environment variable.");
+  }
+
+  return { email, password };
+}
+
 export function hasGoogleSheetsImportEnv() {
   return Boolean(
     process.env.GOOGLE_SHEETS_SPREADSHEET_ID &&

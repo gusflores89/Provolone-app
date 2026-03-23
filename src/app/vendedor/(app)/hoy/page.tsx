@@ -1,5 +1,6 @@
-﻿import Link from "next/link";
+import Link from "next/link";
 import { SectionCard } from "@/components/shared/section-card";
+import { ReorderRouteForm } from "@/components/vendor/reorder-route-form";
 import { getStatusCounts, getVendorTodayData } from "@/lib/vendor-live-data";
 import { getCurrentVendorCode } from "@/lib/vendor-auth";
 
@@ -36,6 +37,9 @@ export default async function VendorTodayPage() {
             ? `Mostrando la ultima fecha disponible para este vendedor: ${effectiveDateLabel}.`
             : `Fecha de agenda: ${effectiveDateLabel}.`}
         </p>
+        <div className="mt-4">
+          <ReorderRouteForm effectiveDate={data.effectiveDate} disabled={data.visits.length === 0} />
+        </div>
         {data.errorMessage ? (
           <p className="mt-4 text-sm text-[var(--muted-foreground)]">{data.errorMessage}</p>
         ) : null}

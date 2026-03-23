@@ -1,6 +1,4 @@
-﻿import { getVendorSession } from "@/lib/vendor-session";
-
-export const DEFAULT_VENDOR_CODE = "V001";
+import { getVendorSession } from "@/lib/vendor-session";
 
 export async function getCurrentVendorCode(rawVendorCode?: string) {
   if (rawVendorCode?.trim()) {
@@ -8,5 +6,5 @@ export async function getCurrentVendorCode(rawVendorCode?: string) {
   }
 
   const session = await getVendorSession();
-  return session?.vendorCode ?? DEFAULT_VENDOR_CODE;
+  return session?.vendorCode ?? "";
 }

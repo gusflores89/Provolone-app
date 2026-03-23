@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { AdminLogoutForm } from "@/components/admin/admin-logout-form";
 
 const items = [
   { href: "/admin", label: "Dashboard" },
@@ -66,6 +67,10 @@ export function AdminSidebar() {
             );
           })}
         </nav>
+
+        <div className="mt-6">
+          <AdminLogoutForm />
+        </div>
       </aside>
     </>
   );

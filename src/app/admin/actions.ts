@@ -1,13 +1,19 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { runGoogleSheetImport, type GoogleSheetImportResult } from "@/lib/google-sheet-import";
+import { clearAdminSession, createAdminSession } from "@/lib/admin-session";
+import { getAdminAuthEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 import { assignZoneToVendor, rebalanceZonesAcrossVendors, type ZoneRebalanceResult } from "@/lib/zone-assignment";
 import { generateWeeklyPlanForWeek, normalizeWeekStartDate, type WeeklyPlanGenerationResult } from "@/lib/weekly-planner";
 
 type ImportActionState = GoogleSheetImportResult;
 type PlanActionState = WeeklyPlanGenerationResult;
+export type AdminLoginState = {
+  error?: string;
+};
 
 export async function runGoogleSheetImportAction(
   previousState: ImportActionState,
@@ -40,6 +46,39 @@ export async function generateWeeklyPlanAction(
   revalidatePath("/admin/visitas");
   revalidatePath("/vendedor/hoy");
   return result;
+}
+
+export async function adminLoginAction(
+  _previousState: AdminLoginState,
+  formData: FormData,
+): Promise<AdminLoginState> {
+  const email = String(formData.get("email") ?? "").trim().toLowerCase();
+  const password = String(formData.get("password") ?? "").trim();
+
+  if (!email || !password) {
+    return { error: "Completá email y clave." };
+  }
+
+  try {
+    const adminAuth = getAdminAuthEnv();
+
+    if (email !== adminAuth.email || password !== adminAuth.password) {
+      return { error: "Email o clave incorrectos." };
+    }
+
+    await createAdminSession({ email });
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : "No se pudo validar el acceso admin.",
+    };
+  }
+
+  redirect("/admin");
+}
+
+export async function adminLogoutAction() {
+  await clearAdminSession();
+  redirect("/admin/ingresar");
 }
 
 export async function rebalanceZonesAction(
